@@ -60,7 +60,7 @@ EXPORT DATASET(Model) Train(
     SELF.v_ord := f_1.v_ord;
     SELF.features := PROJECT(f_set, SVM_Feature);
   END;
-  Model LibSVM_Call(Work1 prm, ProblemList d) := TRANSFORM
+  Model LibSVM_Call(ProblemList d, Work1 prm) := TRANSFORM
     d_problem := ROW(d, Problem);
     scaleData := SVM.Scale(d_problem, prm.Scale);
     d_probScaled := scaleData.problemScaled;
@@ -75,7 +75,7 @@ EXPORT DATASET(Model) Train(
     SELF.sv := ROLLUP(grouped_features, GROUP, rollF(LEFT,ROWS(LEFT)));
     SELF := mdl;
   END;
-  rslt := JOIN(parm_data, problem_data, LEFT.wi = RIGHT.wi OR LEFT.id = -1,
+  rslt := JOIN(problem_data, parm_data, LEFT.wi = RIGHT.wi OR RIGHT.id = -1,
                LibSVM_Call(LEFT, RIGHT), ALL);
   RETURN rslt;
 END;

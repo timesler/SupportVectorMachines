@@ -40,7 +40,7 @@ EXPORT CrossValidate(
   parm_data := PROJECT(p, cvt2Parm(LEFT));
   d := SVM.Converted.ToInstance(observations, actuals);
   problem_data := Converted.Instance2Problem(d); // 1 record file per work id
-  XV_Result LibSVM_Call(Work1 prm, ProblemList d) := TRANSFORM
+  XV_Result LibSVM_Call(ProblemList d, Work1 prm) := TRANSFORM
     SELF.wi := d.wi;
     SELF.id := prm.id;
     d_problem := ROW(d, Problem);
@@ -48,7 +48,13 @@ EXPORT CrossValidate(
     d_probScaled := scaleData.problemScaled;
     SELF := LibSVM.SVMCrossValidate(prm, d_probScaled, folds);
   END;
-  rslt := JOIN(parm_data, problem_data, LEFT.wi = RIGHT.wi OR LEFT.id = -1,
-               LibSVM_Call(LEFT, RIGHT), ALL);
+  ParamWeighted := COUNT(parm_data) > COUNT(problem_data);
+  rslt := IF(
+    ParamWeighted,
+    JOIN(parm_data, problem_data, LEFT.wi = RIGHT.wi OR LEFT.id = -1,
+      LibSVM_Call(RIGHT, LEFT), ALL),
+    JOIN(problem_data, parm_data, LEFT.wi = RIGHT.wi OR RIGHT.id = -1,
+      LibSVM_Call(LEFT, RIGHT), ALL)
+  );
   RETURN rslt;
 END;

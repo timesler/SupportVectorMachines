@@ -60,36 +60,28 @@ EXPORT Converted := MODULE
   SHARED n_label_id := pairs_b_id + 1;    //13
   SHARED n_sv_id := n_label_id + 1;       //14
   SHARED lf_id := n_sv_id; //last field id
-  UNSIGNED4 get_SV_Count(DATASET(SVM.Types.SVM_SV) sv) := FUNCTION
+  SHARED UNSIGNED4 get_SV_Count(DATASET(SVM.Types.SVM_SV) sv) := FUNCTION
     sv_count := COUNT(sv);
     features := SUM(sv, COUNT(sv.features));
     RETURN 2*sv_count + 2*features;
   END;
-  SVM.Types.R8Entry norm_feature(SVM.Types.SVM_Feature f, UNSIGNED c):=TRANSFORM
+  SHARED SVM.Types.R8Entry norm_feature(SVM.Types.SVM_Feature f, UNSIGNED c):=TRANSFORM
     SELF.v := CHOOSE(c, (REAL8)f.nominal, f.v);
   END;
-  Work1 := RECORD
+  SHARED Work1 := RECORD
     DATASET(SVM.Types.R8Entry) d;
   END;
-  Work1 cvt_2_r8(SVM.Types.SVM_SV s) := TRANSFORM
+  SHARED Work1 cvt_2_r8(SVM.Types.SVM_SV s) := TRANSFORM
     SELF.d := DATASET([{2*(COUNT(s.features)+1)},{s.v_ord}], SVM.Types.R8Entry)
             + NORMALIZE(s.features, 2, norm_feature(LEFT, COUNTER));
   END;
-  SVM.Types.R8Entry cvt_sv(DATASET(SVM.Types.SVM_SV) sv) := FUNCTION
+  SHARED SVM.Types.R8Entry cvt_sv(DATASET(SVM.Types.SVM_SV) sv) := FUNCTION
     w1 := PROJECT(sv, cvt_2_r8(LEFT));
     rslt := NORMALIZE(w1, LEFT.d, TRANSFORM(SVM.Types.R8Entry, SELF.v:=RIGHT.v));
     RETURN rslt;
   END;
 
-  /**
-   * Convert from SVM Model type to standardized Layout_Model format. The
-   * Layout_Model format is harder to interpret, but more generalized.
-   * @param id_base Base number from which to start model IDs (default: 1000).
-   * @param mdl Object of SVM Model type (see SupportVectorMachines.Types).
-   * @return Convert SVM model in Layout_Model format (see ML_Core.Types for
-   * format definition).
-   */
-  EXPORT FromModel(UNSIGNED id_base = 1000, DATASET(SVM.Types.Model) mdl) := FUNCTION
+  SHARED FromModelRow(UNSIGNED id_base = 1000, DATASET(SVM.Types.Model) mdl) := FUNCTION
     ML_Types.Layout_Model getField(SVM.Types.Model m, UNSIGNED c) := TRANSFORM
       SELF.wi := m.wi;
       SELF.id := id_base + m.id;
@@ -194,40 +186,66 @@ EXPORT Converted := MODULE
          + nsv_part;
   END;
 
-  Exp_NF := RECORD(ML_Types.NumericField)
+  /**
+   * Convert from SVM Model type to standardized Layout_Model format. The
+   * Layout_Model format is harder to interpret, but more generalized.
+   * @param id_base Base number from which to start model IDs (default: 1000).
+   * @param mdl Object of SVM Model type (see SupportVectorMachines.Types).
+   * @return Convert SVM model in Layout_Model format (see ML_Core.Types for
+   * format definition).
+   */
+  EXPORT FromModel(UNSIGNED id_base = 1000, DATASET(SVM.Types.Model) mdl) := FUNCTION
+    {UNSIGNED2 wi, INTEGER4 id, DATASET(ML_Types.Layout_Model) mdls} convertModel(SVM.Types.Model mdl) := TRANSFORM
+      SELF.wi := mdl.wi;
+      SELF.id := mdl.id;
+      SELF.mdls := FromModelRow(id_base, PROJECT(DATASET(mdl), SVM.Types.Model));
+    END;
+    mdls_LM := PROJECT(mdl, convertModel(LEFT));
+    mdls_LM_sort := SORT(mdls_LM, wi, id);
+
+    ML_Types.Layout_Model combineMdls(ML_Types.Layout_Model mdl_LM) := TRANSFORM
+      SELF := mdl_LM;
+    END;
+    rslt := NORMALIZE(mdls_LM, LEFT.mdls, combineMdls(RIGHT));
+    RETURN rslt;
+  END;
+
+
+
+  SHARED Exp_NF := RECORD(ML_Types.NumericField)
     UNSIGNED feature;
     UNSIGNED vector;
   END;
-  Exp_NF mark_xnf(Exp_NF prev, Exp_NF curr) := TRANSFORM
+  SHARED Exp_NF mark_xnf(Exp_NF prev, Exp_NF curr) := TRANSFORM
     SELF.vector := IF(curr.number>prev.vector,
                       curr.number+(UNSIGNED)curr.value-1,
                       prev.vector);
     SELF.feature:= IF(curr.number=prev.feature, prev.feature, curr.number+1);
     SELF := curr;
   END;
-  SVM.Types.SVM_Feature makeFeature(DATASET(Exp_NF) d) := TRANSFORM
+  SHARED SVM.Types.SVM_Feature makeFeature(DATASET(Exp_NF) d) := TRANSFORM
     SELF.nominal := (INTEGER) d[1].value;
     SELF.v := d[2].value;
   END;
-  SVM.Types.SVM_SV roll_xnf(Exp_NF f, DATASET(Exp_NF) ds) := TRANSFORM
+  SHARED SVM.Types.SVM_SV roll_xnf(Exp_NF f, DATASET(Exp_NF) ds) := TRANSFORM
     feature_data := GROUP(CHOOSEN(ds, ALL, 3), feature);
     SELF.v_ord := (INTEGER) ds[2].value;
     SELF.features := ROLLUP(feature_data, GROUP, makeFeature(ROWS(LEFT)));
   END;
-  SVM.Types.R8Entry toR8(ML_Types.Layout_Model nf) := TRANSFORM
+  SHARED SVM.Types.R8Entry toR8(ML_Types.Layout_Model nf) := TRANSFORM
     SELF.v := nf.value;
   END;
-  SVM.Types.I4Entry toI4(ML_Types.Layout_Model nf) := TRANSFORM
+  SHARED SVM.Types.I4Entry toI4(ML_Types.Layout_Model nf) := TRANSFORM
     SELF.v := (INTEGER) nf.value;
   END;
-  toSV_Dataset(DATASET(ML_Types.Layout_Model) nf) := FUNCTION
+  SHARED toSV_Dataset(DATASET(ML_Types.Layout_Model) nf) := FUNCTION
     x_nf := PROJECT(nf, TRANSFORM(Exp_NF, SELF:=LEFT,SELF:=[]));
     marked_x := ITERATE(x_nf, mark_xnf(LEFT,RIGHT));
     group_x := GROUP(marked_x, vector);
     rslt := ROLLUP(group_x, GROUP, roll_xnf(LEFT, ROWS(LEFT)));
     RETURN rslt;
   END;
-  toFeatStat_Dataset(DATASET(ML_Types.Layout_Model) nf) := FUNCTION
+  SHARED toFeatStat_Dataset(DATASET(ML_Types.Layout_Model) nf) := FUNCTION
     statCount := COUNT(nf)/2;
     numberStart := MIN(nf, number);
     means := nf(number BETWEEN numberStart AND numberStart+statCount);
@@ -254,7 +272,8 @@ EXPORT Converted := MODULE
    * @return Converted SVM model in SVM Model format.
    */
   EXPORT ToModel(DATASET(ML_Types.Layout_Model) mdl) := FUNCTION
-    gs0 := SORT(GROUP(mdl, wi, id, ALL), number);
+    mdl_grp := GROUP(SORTED(mdl, wi, id, number, ASSERT), wi, id);
+
     SVM.Types.Model rollModel(DATASET(ML_Types.Layout_Model) d) := TRANSFORM
       fixed := DICTIONARY(d(number<=lf_id), {number=>value});
       nsv := (UNSIGNED) fixed[n_sv_id].value;
@@ -300,7 +319,117 @@ EXPORT Converted := MODULE
       SELF.labels:= PROJECT(d(number BETWEEN label_start AND label_stop), toI4(LEFT));
       SELF.nSV := PROJECT(d(number BETWEEN nSV_start AND nSV_stop), toI4(LEFT));
     END;
-    rslt := ROLLUP(gs0, GROUP, rollModel(ROWS(LEFT)));
+    rslt := ROLLUP(SORTED(mdl_grp, wi, id, number, ASSERT), GROUP, rollModel(ROWS(LEFT)));
     RETURN rslt;
   END;
+
+  // Model := SVM.Types.Model;
+  // Model_Split := RECORD
+    // Model.wi;
+    // Model.id;
+    // Model.svmType;
+    // Model.kernelType;
+    // Model.degree;
+    // Model.gamma;
+    // Model.coef0;
+    // Model.k;
+    // Model.l;
+    // Model.scale;
+    // UNSIGNED8 scaleInfo_cnt;
+    // UNSIGNED8 probA_cnt;
+    // UNSIGNED8 probB_cnt;
+    // UNSIGNED8 label_cnt;
+    // UNSIGNED8 sv_cnt;
+    // DATASET(ML_Types.Layout_Model) sv_LM;
+    // DATASET(ML_Types.Layout_Model) scaleInfo_LM;
+    // DATASET(ML_Types.Layout_Model) sv_coef_LM;
+    // DATASET(ML_Types.Layout_Model) rho_LM;
+    // DATASET(ML_Types.Layout_Model) probA_LM;
+    // DATASET(ML_Types.Layout_Model) probB_LM;
+    // DATASET(ML_Types.Layout_Model) labels_LM;
+    // DATASET(ML_Types.Layout_Model) nSV_LM;
+  // END;
+
+  // EXPORT ToModel(DATASET(ML_Types.Layout_Model) mdl) := FUNCTION
+    // Model_Split getParentRows(ML_Types.Layout_Model mdl) := TRANSFORM
+      // SELF := mdl;
+      // SELF := [];
+    // END;
+    // mdlParent := PROJECT(mdl, getParentRows(LEFT));
+    // Model_Split denormLM(Model_Split p, ML_Types.Layout_Model c) := TRANSFORM
+      // SELF.wi            := c.wi;
+      // SELF.id            := IF(c.number = Field_ID, (INTEGER4) c.value, p.id);
+      // SELF.svmType       := IF(c.number = s_type_id, (UNSIGNED1) c.value, p.svmType);
+      // SELF.kernelType    := IF(c.number = k_type_id, (UNSIGNED1) c.value, p.kernelType);
+      // SELF.degree        := IF(c.number = degree_id, (UNSIGNED) c.value, p.degree);
+      // SELF.coef0         := IF(c.number = coef0_id, c.value, p.coef0);
+      // SELF.gamma         := IF(c.number = gamma_id, c.value, p.gamma);
+      // SELF.k             := IF(c.number = k_id, (UNSIGNED) c.value, p.k);
+      // SELF.l             := IF(c.number = l_id, (UNSIGNED) c.value, p.l);
+      // SELF.scale         := IF(c.number = scale_id, (BOOLEAN) c.value, p.scale);
+      // SELF.scaleInfo_cnt := IF(c.number = scaleInfo_id, (UNSIGNED) c.value, p.scaleInfo_cnt);
+      // SELF.probA_cnt     := IF(c.number = pairs_a_id, (UNSIGNED) c.value, p.probA_cnt);
+      // SELF.probB_cnt     := IF(c.number = pairs_b_id, (UNSIGNED) c.value, p.probB_cnt);
+      // SELF.label_cnt     := IF(c.number = n_label_id, (UNSIGNED) c.value, p.label_cnt);
+      // SELF.sv_cnt        := IF(c.number = n_sv_id, (UNSIGNED) c.value, p.sv_cnt);
+      // SELF.sv_LM         := IF(c.number BETWEEN lf_id + 1 AND lf_id + p.sv_cnt,
+        // p.sv_LM + c, p.sv_LM);
+        // SELF.scaleInfo_LM := IF(c.number BETWEEN
+        // lf_id + p.sv_cnt + 1 AND
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt,
+        // p.scaleInfo_LM + c,
+        // p.scaleInfo_LM);
+        // SELF.sv_coef_LM := IF(c.number BETWEEN
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + 1 AND
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*p.l,
+        // p.sv_coef_LM + c,
+        // p.sv_coef_LM);
+        // SELF.rho_LM := IF(c.number BETWEEN
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*p.l + 1 AND
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2),
+        // p.rho_LM + c,
+        // p.rho_LM);
+        // SELF.probA_LM := IF(c.number BETWEEN
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + 1 AND
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt,
+        // p.probA_LM + c,
+        // p.probA_LM);
+        // SELF.probB_LM := IF(c.number BETWEEN
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + 1 AND
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt,
+        // p.probB_LM + c,
+        // p.probB_LM);
+        // SELF.labels_LM := IF(c.number BETWEEN
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + 1 AND
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + p.label_cnt,
+        // p.labels_LM + c,
+        // p.labels_LM);
+        // SELF.nSV_LM := IF(c.number BETWEEN
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + p.label_cnt + 1 AND
+        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + p.label_cnt + p.label_cnt,
+        // p.nSV_LM + c,
+        // p.nSV_LM);
+      // SELF := p;
+    // END;
+    // mdlLumped := DENORMALIZE(
+      // mdlParent,
+      // mdl,
+      // LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id,
+      // denormLM(LEFT, RIGHT),
+      // NOSORT
+    // );
+    // Model getSVMModel(Model_Split mL) := TRANSFORM
+      // SELF.scaleInfo := toFeatStat_Dataset(mL.scaleInfo_LM);
+      // SELF.sv := toSV_Dataset(mL.sv_LM);
+      // SELF.sv_coef := PROJECT(mL.sv_coef_LM, toR8(LEFT));
+      // SELF.rho := PROJECT(mL.rho_LM, toR8(LEFT));
+      // SELF.probA := PROJECT(mL.probA_LM, toR8(LEFT));
+      // SELF.probB := PROJECT(mL.probB_LM, toR8(LEFT));
+      // SELF.labels := PROJECT(mL.labels_LM, toI4(LEFT));
+      // SELF.nSV := PROJECT(mL.nSV_LM, toI4(LEFT));
+      // SELF := mL;
+    // END;
+    // rslt := PROJECT(mdlLumped, getSVMModel(LEFT));
+    // RETURN rslt;
+  // END;
 END;
