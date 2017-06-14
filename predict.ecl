@@ -13,6 +13,8 @@ SVM_Pred_Values := SVM.Types.SVM_Pred_Values;
 SVM_Pred_Prob_Est := SVM.Types.SVM_Pred_Prob_Est;
 SVM_Predict := LibSVM.SVMPredict;
 LibSVM_Node := LibSVM.Types.LibSVM_Node;
+NumericField := ML_Types.NumericField;
+FeatureStats := SVM.Types.FeatureStats;
 
 /**
  * Module for generating predictions on data from SVM models.
@@ -20,7 +22,6 @@ LibSVM_Node := LibSVM.Types.LibSVM_Node;
  * @param observations Independent variables to apply model to and generate predictions.
  */
 EXPORT Predict(DATASET(Model) models, DATASET(ML_Types.NumericField) observations) := MODULE
-  SHARED d := SVM.Converted.ToInstance(observations);
 
   SHARED LibSVM_Node cvtNode(SVM.Types.SVM_Feature f) := TRANSFORM
     SELF.indx := f.nominal;
@@ -57,30 +58,22 @@ EXPORT Predict(DATASET(Model) models, DATASET(ML_Types.NumericField) observation
   END;
   SHARED svm_mdls := PROJECT(models, cvtModel(LEFT));
 
-  SHARED LibSVM_Node applyScale(LibSVM_Node x, SVM.Types.FeatureStats s)
-  := TRANSFORM
-    SELF.indx := x.indx;
-    SELF.value := (x.value - s.mean) / s.sd;
-  END;
-
   // Prediction only
   SHARED SVM_Prediction p_only(SVM_Instance inst, Work1 m) := TRANSFORM
-    x_nodes := PROJECT(inst.x,cvtNode(LEFT));
-    x_nodes_scale := JOIN(x_nodes, m.scaleInfo, LEFT.indx = RIGHT.indx, applyScale(LEFT, RIGHT))
+    x_nodes := PROJECT(inst.x,cvtNode(LEFT))
       & DATASET([{-1,0.0}], LibSVM_Node);
     SELF.wi := inst.wi;
     SELF.id := m.id;
     SELF.rid := inst.rid;
     SELF.target_y := inst.y;
-    SELF.predict_y := SVM_Predict(m, x_nodes_scale, SVM_Output.LABEL_ONLY)[1].v;
+    SELF.predict_y := SVM_Predict(m, x_nodes, SVM_Output.LABEL_ONLY)[1].v;
   END;
 
   // Prediction and decision values.  Values are empty if not supported
   SHARED SVM_Pred_Values p_values(SVM_Instance inst, Work1 m) := TRANSFORM
-    x_nodes := PROJECT(inst.x,cvtNode(LEFT));
-    x_nodes_scale := JOIN(x_nodes, m.scaleInfo, LEFT.indx = RIGHT.indx, applyScale(LEFT, RIGHT))
+    x_nodes := PROJECT(inst.x,cvtNode(LEFT))
       & DATASET([{-1,0.0}], LibSVM_Node);
-    rslt_array := SVM_Predict(m, x_nodes_scale, SVM_Output.VALUES);
+    rslt_array := SVM_Predict(m, x_nodes, SVM_Output.VALUES);
     SELF.wi := inst.wi;
     SELF.id := m.id;
     SELF.rid := inst.rid;
@@ -91,10 +84,9 @@ EXPORT Predict(DATASET(Model) models, DATASET(ML_Types.NumericField) observation
 
   // Prediction and probabilities.  Probability estimates empty if not supported.
   SHARED SVM_Pred_Prob_Est p_pest(SVM_Instance inst, Work1 m) := TRANSFORM
-    x_nodes := PROJECT(inst.x,cvtNode(LEFT));
-    x_nodes_scale := JOIN(x_nodes, m.scaleInfo, LEFT.indx = RIGHT.indx, applyScale(LEFT, RIGHT))
+    x_nodes := PROJECT(inst.x,cvtNode(LEFT))
       & DATASET([{-1,0.0}], LibSVM_Node);
-    rslt_array := SVM_Predict(m, x_nodes_scale, SVM_Output.PROBS);
+    rslt_array := SVM_Predict(m, x_nodes, SVM_Output.PROBS);
     SELF.wi := inst.wi;
     SELF.id := m.id;
     SELF.rid := inst.rid;
@@ -102,6 +94,29 @@ EXPORT Predict(DATASET(Model) models, DATASET(ML_Types.NumericField) observation
     SELF.predict_y := rslt_array[1].v;
     SELF.prob_estimates := CHOOSEN(rslt_array, ALL, 2);
   END;
+
+  SHARED FeatureStatsNorm := RECORD(FeatureStats)
+    UNSIGNED wi;
+    UNSIGNED id;
+  END;
+  SHARED FeatureStatsNorm normScaleInfo(Work1 m, FeatureStats s) := TRANSFORM
+    SELF.wi := m.wi;
+    SELF.id := m.id;
+    SELF.indx := s.indx;
+    SELF.mean := IF(m.Scale, s.mean, 0.0);
+    SELF.sd := IF(m.Scale, s.sd, 1.0);
+  END;
+  SHARED NumericField applyScale(NumericField nf, FeatureStatsNorm s) := TRANSFORM
+    SELF.wi := nf.wi;
+    SELF.id := nf.id;
+    SELF.number := nf.number;
+    SELF.value := (nf.value - s.mean) / s.sd;
+  END;
+
+  scaleInfo := NORMALIZE(svm_mdls, LEFT.ScaleInfo, normScaleInfo(LEFT, RIGHT));
+  SHARED obsScaled := JOIN(observations, scaleInfo, LEFT.wi = RIGHT.wi AND LEFT.number = RIGHT.indx, applyScale(LEFT, RIGHT));
+
+  SHARED d := SVM.Converted.ToInstance(obsScaled);
 
   /**
    * Get predictions (classes or values) only.

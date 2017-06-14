@@ -34,8 +34,8 @@ EXPORT Scale(
   SHARED FeatureStats getStats(xIDRec firstRow, DATASET(xIDRec) grp) := TRANSFORM
     SELF.indx := firstRow.indx;
     countX := COUNT(grp);
-    meanX := IF(Scale, AVE(grp, value), 0);
-    varX := IF(Scale, SUM(grp, POWER(value - meanX, 2)) / (countX - 1), 1);
+    meanX := IF(Scale AND firstRow.indx > 1, AVE(grp, value), 0);
+    varX := IF(Scale AND firstRow.indx > 1, SUM(grp, POWER(value - meanX, 2)) / (countX - 1), 1);
     SELF.mean := meanX;
     SELF.sd := SQRT(varX);
   END;

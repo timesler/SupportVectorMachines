@@ -62,23 +62,17 @@ EXPORT Converted := MODULE
   SHARED lf_id := n_sv_id; //last field id
   SHARED UNSIGNED4 get_SV_Count(DATASET(SVM.Types.SVM_SV) sv) := FUNCTION
     sv_count := COUNT(sv);
-    features := SUM(sv, COUNT(sv.features));
-    RETURN 2*sv_count + 2*features;
+    features := COUNT(sv[1].features);
+    RETURN sv_count * features;
   END;
-  SHARED SVM.Types.R8Entry norm_feature(SVM.Types.SVM_Feature f, UNSIGNED c):=TRANSFORM
-    SELF.v := CHOOSE(c, (REAL8)f.nominal, f.v);
+  SHARED ML_Types.Layout_Model normSVFeatures(SVM.Types.SVM_SV s, SVM.Types.SVM_Feature f, UNSIGNED c) := TRANSFORM
+    SELF.id := s.v_ord;
+    SELF.number := c;
+    SELF.value := f.v;
+    SELF := [];
   END;
-  SHARED Work1 := RECORD
-    DATASET(SVM.Types.R8Entry) d;
-  END;
-  SHARED Work1 cvt_2_r8(SVM.Types.SVM_SV s) := TRANSFORM
-    SELF.d := DATASET([{2*(COUNT(s.features)+1)},{s.v_ord}], SVM.Types.R8Entry)
-            + NORMALIZE(s.features, 2, norm_feature(LEFT, COUNTER));
-  END;
-  SHARED SVM.Types.R8Entry cvt_sv(DATASET(SVM.Types.SVM_SV) sv) := FUNCTION
-    w1 := PROJECT(sv, cvt_2_r8(LEFT));
-    rslt := NORMALIZE(w1, LEFT.d, TRANSFORM(SVM.Types.R8Entry, SELF.v:=RIGHT.v));
-    RETURN rslt;
+  SHARED cvt_sv(DATASET(SVM.Types.SVM_SV) sv) := FUNCTION
+    RETURN NORMALIZE(sv, LEFT.features, normSVFeatures(LEFT, RIGHT, COUNTER));
   END;
 
   SHARED FromModelRow(UNSIGNED id_base = 1000, DATASET(SVM.Types.Model) mdl) := FUNCTION
@@ -94,11 +88,11 @@ EXPORT Converted := MODULE
                               (REAL8) COUNT(m.labels), (REAL8) get_SV_Count(m.sv));
     END;
     fixed_part := NORMALIZE(mdl, lf_id-field_id+1, getField(LEFT,COUNTER));
-    ML_Types.Layout_Model normSV(SVM.Types.Model m, SVM.Types.R8Entry e, UNSIGNED8 c) := TRANSFORM
+    ML_Types.Layout_Model normSV(SVM.Types.Model m, ML_Types.Layout_Model e, UNSIGNED8 c) := TRANSFORM
       SELF.wi := m.wi;
       SELF.id := id_base + m.id;
       SELF.number := lf_id + c;
-      SELF.value  := e.v;
+      SELF.value  := e.value;
     END;
     sv_part := NORMALIZE(mdl, cvt_SV(LEFT.sv), normSV(LEFT, RIGHT, COUNTER));
     ML_Types.Layout_Model normMean(SVM.Types.Model m, SVM.Types.FeatureStats ft,
@@ -211,56 +205,54 @@ EXPORT Converted := MODULE
   END;
 
 
-
   SHARED Exp_NF := RECORD(ML_Types.NumericField)
     UNSIGNED feature;
     UNSIGNED vector;
   END;
-  SHARED Exp_NF mark_xnf(Exp_NF prev, Exp_NF curr) := TRANSFORM
-    SELF.vector := IF(curr.number>prev.vector,
-                      curr.number+(UNSIGNED)curr.value-1,
-                      prev.vector);
-    SELF.feature:= IF(curr.number=prev.feature, prev.feature, curr.number+1);
-    SELF := curr;
+
+
+  SHARED Exp_NF to_xnf(ML_Types.Layout_Model nf, UNSIGNED4 featureCnt) := TRANSFORM
+    SELF.vector := ROUNDUP((nf.number - lf_id) / featureCnt);
+    SELF.feature:= ((nf.number - lf_id - 1) % featureCnt) + 2;
+    SELF := nf;
   END;
-  SHARED SVM.Types.SVM_Feature makeFeature(DATASET(Exp_NF) d) := TRANSFORM
-    SELF.nominal := (INTEGER) d[1].value;
-    SELF.v := d[2].value;
+  SHARED SVM.Types.SVM_Feature makeFeature(Exp_NF d) := TRANSFORM
+    SELF.nominal := d.feature;
+    SELF.v := d.value;
   END;
   SHARED SVM.Types.SVM_SV roll_xnf(Exp_NF f, DATASET(Exp_NF) ds) := TRANSFORM
-    feature_data := GROUP(CHOOSEN(ds, ALL, 3), feature);
-    SELF.v_ord := (INTEGER) ds[2].value;
-    SELF.features := ROLLUP(feature_data, GROUP, makeFeature(ROWS(LEFT)));
+    SELF.v_ord := f.vector;
+    SELF.features := PROJECT(ds, makeFeature(LEFT));
   END;
+  SHARED toSV_Dataset(DATASET(ML_Types.Layout_Model) nf, UNSIGNED4 featureCnt) := FUNCTION
+    marked_x := PROJECT(nf, to_xnf(LEFT, featureCnt));
+    group_x := GROUP(marked_x, vector, LOCAL);
+    rslt := ROLLUP(group_x, GROUP, roll_xnf(LEFT, ROWS(LEFT)));
+    RETURN rslt;
+  END;
+
+
   SHARED SVM.Types.R8Entry toR8(ML_Types.Layout_Model nf) := TRANSFORM
     SELF.v := nf.value;
   END;
   SHARED SVM.Types.I4Entry toI4(ML_Types.Layout_Model nf) := TRANSFORM
     SELF.v := (INTEGER) nf.value;
   END;
-  SHARED toSV_Dataset(DATASET(ML_Types.Layout_Model) nf) := FUNCTION
-    x_nf := PROJECT(nf, TRANSFORM(Exp_NF, SELF:=LEFT,SELF:=[]));
-    marked_x := ITERATE(x_nf, mark_xnf(LEFT,RIGHT));
-    group_x := GROUP(marked_x, vector);
-    rslt := ROLLUP(group_x, GROUP, roll_xnf(LEFT, ROWS(LEFT)));
-    RETURN rslt;
-  END;
-  SHARED toFeatStat_Dataset(DATASET(ML_Types.Layout_Model) nf) := FUNCTION
-    statCount := COUNT(nf)/2;
-    numberStart := MIN(nf, number);
-    means := nf(number BETWEEN numberStart AND numberStart+statCount);
-    sds := nf(number BETWEEN numberStart+statCount+1 AND numberStart+statCount*2);
 
-    SVM.Types.FeatureStats makeStats(ML_Types.Layout_Model m, ML_Types.Layout_Model sd)
+  SHARED toFeatStat_Dataset(DATASET(ML_Types.Layout_Model) means, DATASET(ML_Types.Layout_Model) sds) := FUNCTION
+    statCount := COUNT(means);
+    numberStart := MIN(means, number);
+
+    SVM.Types.FeatureStats makeStats(ML_Types.Layout_Model cur, INTEGER c)
     := TRANSFORM
-      SELF.indx := IF(
-        m.number = numberStart, -1,
-        m.number - numberStart + 1);
-      SELF.mean := m.value;
-      SELF.sd := sd.value;
+      SELF.indx := IF(c = 1, -1,
+        cur.number - numberStart + 1);
+      SELF.mean := cur.value;
+      SELF.sd := sds[c].value;
     END;
 
-    rslt := JOIN(means, sds, LEFT.number = RIGHT.number-statCount, makeStats(LEFT, RIGHT));
+    rslt := PROJECT(means, makeStats(LEFT, COUNTER));
+
     RETURN rslt;
   END;
 
@@ -310,8 +302,11 @@ EXPORT Converted := MODULE
       SELF.k := k;
       SELF.l := l;
       SELF.scale := scale;
-      SELF.scaleInfo := toFeatStat_Dataset(d(number BETWEEN scaleInfo_start AND scaleInfo_stop));
-      SELF.sv := toSV_Dataset(d(number BETWEEN sv_start AND sv_stop));
+      SELF.scaleInfo := toFeatStat_Dataset(
+        d(number BETWEEN scaleInfo_start AND scaleInfo_start + scaleInfo/2-1),
+        d(number BETWEEN scaleInfo_start + scaleInfo/2 AND scaleInfo_stop)
+      );
+      SELF.sv := toSV_Dataset(d(number BETWEEN sv_start AND sv_stop), scaleInfo / 2 - 1);
       SELF.sv_coef := PROJECT(d(number BETWEEN coef_start AND coef_stop), toR8(LEFT));
       SELF.rho := PROJECT(d(number BETWEEN rho_start AND rho_stop), toR8(LEFT));
       SELF.probA := PROJECT(d(number BETWEEN probA_start AND probA_stop), toR8(LEFT));
@@ -322,114 +317,4 @@ EXPORT Converted := MODULE
     rslt := ROLLUP(SORTED(mdl_grp, wi, id, number, ASSERT), GROUP, rollModel(ROWS(LEFT)));
     RETURN rslt;
   END;
-
-  // Model := SVM.Types.Model;
-  // Model_Split := RECORD
-    // Model.wi;
-    // Model.id;
-    // Model.svmType;
-    // Model.kernelType;
-    // Model.degree;
-    // Model.gamma;
-    // Model.coef0;
-    // Model.k;
-    // Model.l;
-    // Model.scale;
-    // UNSIGNED8 scaleInfo_cnt;
-    // UNSIGNED8 probA_cnt;
-    // UNSIGNED8 probB_cnt;
-    // UNSIGNED8 label_cnt;
-    // UNSIGNED8 sv_cnt;
-    // DATASET(ML_Types.Layout_Model) sv_LM;
-    // DATASET(ML_Types.Layout_Model) scaleInfo_LM;
-    // DATASET(ML_Types.Layout_Model) sv_coef_LM;
-    // DATASET(ML_Types.Layout_Model) rho_LM;
-    // DATASET(ML_Types.Layout_Model) probA_LM;
-    // DATASET(ML_Types.Layout_Model) probB_LM;
-    // DATASET(ML_Types.Layout_Model) labels_LM;
-    // DATASET(ML_Types.Layout_Model) nSV_LM;
-  // END;
-
-  // EXPORT ToModel(DATASET(ML_Types.Layout_Model) mdl) := FUNCTION
-    // Model_Split getParentRows(ML_Types.Layout_Model mdl) := TRANSFORM
-      // SELF := mdl;
-      // SELF := [];
-    // END;
-    // mdlParent := PROJECT(mdl, getParentRows(LEFT));
-    // Model_Split denormLM(Model_Split p, ML_Types.Layout_Model c) := TRANSFORM
-      // SELF.wi            := c.wi;
-      // SELF.id            := IF(c.number = Field_ID, (INTEGER4) c.value, p.id);
-      // SELF.svmType       := IF(c.number = s_type_id, (UNSIGNED1) c.value, p.svmType);
-      // SELF.kernelType    := IF(c.number = k_type_id, (UNSIGNED1) c.value, p.kernelType);
-      // SELF.degree        := IF(c.number = degree_id, (UNSIGNED) c.value, p.degree);
-      // SELF.coef0         := IF(c.number = coef0_id, c.value, p.coef0);
-      // SELF.gamma         := IF(c.number = gamma_id, c.value, p.gamma);
-      // SELF.k             := IF(c.number = k_id, (UNSIGNED) c.value, p.k);
-      // SELF.l             := IF(c.number = l_id, (UNSIGNED) c.value, p.l);
-      // SELF.scale         := IF(c.number = scale_id, (BOOLEAN) c.value, p.scale);
-      // SELF.scaleInfo_cnt := IF(c.number = scaleInfo_id, (UNSIGNED) c.value, p.scaleInfo_cnt);
-      // SELF.probA_cnt     := IF(c.number = pairs_a_id, (UNSIGNED) c.value, p.probA_cnt);
-      // SELF.probB_cnt     := IF(c.number = pairs_b_id, (UNSIGNED) c.value, p.probB_cnt);
-      // SELF.label_cnt     := IF(c.number = n_label_id, (UNSIGNED) c.value, p.label_cnt);
-      // SELF.sv_cnt        := IF(c.number = n_sv_id, (UNSIGNED) c.value, p.sv_cnt);
-      // SELF.sv_LM         := IF(c.number BETWEEN lf_id + 1 AND lf_id + p.sv_cnt,
-        // p.sv_LM + c, p.sv_LM);
-        // SELF.scaleInfo_LM := IF(c.number BETWEEN
-        // lf_id + p.sv_cnt + 1 AND
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt,
-        // p.scaleInfo_LM + c,
-        // p.scaleInfo_LM);
-        // SELF.sv_coef_LM := IF(c.number BETWEEN
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + 1 AND
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*p.l,
-        // p.sv_coef_LM + c,
-        // p.sv_coef_LM);
-        // SELF.rho_LM := IF(c.number BETWEEN
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*p.l + 1 AND
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2),
-        // p.rho_LM + c,
-        // p.rho_LM);
-        // SELF.probA_LM := IF(c.number BETWEEN
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + 1 AND
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt,
-        // p.probA_LM + c,
-        // p.probA_LM);
-        // SELF.probB_LM := IF(c.number BETWEEN
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + 1 AND
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt,
-        // p.probB_LM + c,
-        // p.probB_LM);
-        // SELF.labels_LM := IF(c.number BETWEEN
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + 1 AND
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + p.label_cnt,
-        // p.labels_LM + c,
-        // p.labels_LM);
-        // SELF.nSV_LM := IF(c.number BETWEEN
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + p.label_cnt + 1 AND
-        // lf_id + p.sv_cnt + p.scaleInfo_cnt + (p.k-1)*(p.l + p.k/2) + p.probA_cnt + p.probB_cnt + p.label_cnt + p.label_cnt,
-        // p.nSV_LM + c,
-        // p.nSV_LM);
-      // SELF := p;
-    // END;
-    // mdlLumped := DENORMALIZE(
-      // mdlParent,
-      // mdl,
-      // LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id,
-      // denormLM(LEFT, RIGHT),
-      // NOSORT
-    // );
-    // Model getSVMModel(Model_Split mL) := TRANSFORM
-      // SELF.scaleInfo := toFeatStat_Dataset(mL.scaleInfo_LM);
-      // SELF.sv := toSV_Dataset(mL.sv_LM);
-      // SELF.sv_coef := PROJECT(mL.sv_coef_LM, toR8(LEFT));
-      // SELF.rho := PROJECT(mL.rho_LM, toR8(LEFT));
-      // SELF.probA := PROJECT(mL.probA_LM, toR8(LEFT));
-      // SELF.probB := PROJECT(mL.probB_LM, toR8(LEFT));
-      // SELF.labels := PROJECT(mL.labels_LM, toI4(LEFT));
-      // SELF.nSV := PROJECT(mL.nSV_LM, toI4(LEFT));
-      // SELF := mL;
-    // END;
-    // rslt := PROJECT(mdlLumped, getSVMModel(LEFT));
-    // RETURN rslt;
-  // END;
 END;
