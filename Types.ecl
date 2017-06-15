@@ -72,7 +72,7 @@ EXPORT Types := MODULE
     SELF.shrinking  := true;
     SELF.prob_est   := true;
     SELF.scale      := true;
-    SELF.nr_weight  := 1;
+    SELF.nr_weight  := 0;
     SELF.lbl        := DATASET([], I4Entry);
     SELF.weight     := DATASET([], R8Entry);
   END;

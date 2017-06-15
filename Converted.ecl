@@ -239,19 +239,24 @@ EXPORT Converted := MODULE
     SELF.v := (INTEGER) nf.value;
   END;
 
-  SHARED toFeatStat_Dataset(DATASET(ML_Types.Layout_Model) means, DATASET(ML_Types.Layout_Model) sds) := FUNCTION
-    statCount := COUNT(means);
+  SHARED toFeatStat_Dataset(
+    DATASET(ML_Types.Layout_Model) means,
+    DATASET(ML_Types.Layout_Model) sds) := FUNCTION
+
     numberStart := MIN(means, number);
 
-    SVM.Types.FeatureStats makeStats(ML_Types.Layout_Model cur, INTEGER c)
-    := TRANSFORM
-      SELF.indx := IF(c = 1, -1,
-        cur.number - numberStart + 1);
-      SELF.mean := cur.value;
-      SELF.sd := sds[c].value;
+    {INTEGER4 indx, REAL8 mean} renameMeans(ML_Types.Layout_Model lm) := TRANSFORM
+      SELF.indx := lm.number - numberStart + 2;
+      SELF.mean := lm.value;
     END;
+    {REAL8 sd} renameSDs(ML_Types.Layout_Model lm) := TRANSFORM
+      SELF.sd := lm.value;
+    END;
+    means_rn := PROJECT(means, renameMeans(LEFT));
+    sds_rn := PROJECT(sds, renameSDs(LEFT));
 
-    rslt := PROJECT(means, makeStats(LEFT, COUNTER));
+    rslt := DATASET([{-1, 0.0, 1.0}], SVM.Types.FeatureStats)
+      + COMBINE(means_rn, sds_rn);
 
     RETURN rslt;
   END;
@@ -267,31 +272,31 @@ EXPORT Converted := MODULE
     mdl_grp := GROUP(SORTED(mdl, wi, id, number, ASSERT), wi, id);
 
     SVM.Types.Model rollModel(DATASET(ML_Types.Layout_Model) d) := TRANSFORM
-      fixed := DICTIONARY(d(number<=lf_id), {number=>value});
-      nsv := (UNSIGNED) fixed[n_sv_id].value;
-      probA := (UNSIGNED) fixed[pairs_a_id].value;
-      probB := (UNSIGNED) fixed[pairs_b_id].value;
-      labels:= (UNSIGNED) fixed[n_label_id].value;
-      k := (UNSIGNED) fixed[k_id].value;
-      l := (UNSIGNED) fixed[l_id].value;
-      scale := (BOOLEAN) fixed[scale_id].value;
-      scaleInfo := (UNSIGNED) fixed[scaleInfo_id].value;
-      sv_start := lf_id + 1;
-      sv_stop := sv_start + nsv - 1;
-      scaleInfo_start := sv_stop + 1;
-      scaleInfo_stop := scaleInfo_start + scaleInfo - 1;
-      coef_start := scaleInfo_stop + 1;
-      coef_stop := coef_start + (k-1)*l - 1;
-      rho_start := coef_stop + 1;
-      rho_stop := rho_start + (k-1)*k/2 - 1;
-      probA_start := rho_stop + 1;
-      probA_stop := probA_start + probA - 1;
-      probB_start := probA_stop + 1;
-      probB_stop := probB_start + probB - 1;
-      label_start := probB_stop + 1;
-      label_stop := label_start + labels - 1;
-      nSV_start := label_stop + 1;
-      nSV_stop := nSV_start + labels - 1;
+      fixed := d(number<=lf_id);
+      nsv := __COMMON__((UNSIGNED) fixed[n_sv_id].value);
+      probA := __COMMON__((UNSIGNED) fixed[pairs_a_id].value);
+      probB := __COMMON__((UNSIGNED) fixed[pairs_b_id].value);
+      labels:= __COMMON__((UNSIGNED) fixed[n_label_id].value);
+      k := __COMMON__((UNSIGNED) fixed[k_id].value);
+      l := __COMMON__((UNSIGNED) fixed[l_id].value);
+      scale := __COMMON__((BOOLEAN) fixed[scale_id].value);
+      scaleInfo := __COMMON__((UNSIGNED) fixed[scaleInfo_id].value);
+      sv_start := __COMMON__(lf_id + 1);
+      sv_stop := __COMMON__(sv_start + nsv - 1);
+      scaleInfo_start := __COMMON__(sv_stop + 1);
+      scaleInfo_stop := __COMMON__(scaleInfo_start + scaleInfo - 1);
+      coef_start := __COMMON__(scaleInfo_stop + 1);
+      coef_stop := __COMMON__(coef_start + (k-1)*l - 1);
+      rho_start := __COMMON__(coef_stop + 1);
+      rho_stop := __COMMON__(rho_start + (k-1)*k/2 - 1);
+      probA_start := __COMMON__(rho_stop + 1);
+      probA_stop := __COMMON__(probA_start + probA - 1);
+      probB_start := __COMMON__(probA_stop + 1);
+      probB_stop := __COMMON__(probB_start + probB - 1);
+      label_start := __COMMON__(probB_stop + 1);
+      label_stop := __COMMON__(label_start + labels - 1);
+      nSV_start := __COMMON__(label_stop + 1);
+      nSV_stop := __COMMON__(nSV_start + labels - 1);
       SELF.wi := d[1].wi;
       SELF.id := (UNSIGNED) fixed[Field_ID].value;
       SELF.svmType := (UNSIGNED1) fixed[s_type_id].value;
@@ -303,8 +308,8 @@ EXPORT Converted := MODULE
       SELF.l := l;
       SELF.scale := scale;
       SELF.scaleInfo := toFeatStat_Dataset(
-        d(number BETWEEN scaleInfo_start AND scaleInfo_start + scaleInfo/2-1),
-        d(number BETWEEN scaleInfo_start + scaleInfo/2 AND scaleInfo_stop)
+        d(number BETWEEN scaleInfo_start + 1 AND scaleInfo_start + scaleInfo/2-1),
+        d(number BETWEEN scaleInfo_start + scaleInfo/2 + 1 AND scaleInfo_stop)
       );
       SELF.sv := toSV_Dataset(d(number BETWEEN sv_start AND sv_stop), scaleInfo / 2 - 1);
       SELF.sv_coef := PROJECT(d(number BETWEEN coef_start AND coef_stop), toR8(LEFT));
